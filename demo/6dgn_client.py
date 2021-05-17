@@ -1,23 +1,18 @@
-# Copyright (c) 2019, NVIDIA CORPORATION.  All rights reserved.
-#
-# NVIDIA CORPORATION and its licensors retain all intellectual property
-# and proprietary rights in and to this software, related documentation
-# and any modifications thereto.  Any use, reproduction, disclosure or
-# distribution of this software and related documentation without an express
-# license agreement from NVIDIA CORPORATION is strictly prohibited.
 from __future__ import print_function
 
+import sys
 import numpy as np
 import argparse
 import grasp_estimator
-import sys
+
 import os
 import tensorflow as tf
 import glob
 import mayavi.mlab as mlab
 from visualization_utils import *
 import mayavi.mlab as mlab
-from grasp_data_reader import regularize_pc_point_count
+
+from easy_tcp_python2_3 import socket_utils as su
 
 def make_parser():
     parser = argparse.ArgumentParser(
@@ -91,6 +86,9 @@ def backproject(depth_cv, intrinsic_matrix, return_finite_depth=True, return_sel
 
 
 def main(args):
+
+    sock = su.initialize_client('localhost', 7777)
+
     parser = make_parser()
     args = parser.parse_args(args)
     cfg = grasp_estimator.joint_config(
@@ -106,11 +104,9 @@ def main(args):
     estimator.build_network()
     estimator.load_weights(sess)
 
-    for npy_file in glob.glob(os.path.join(args.npy_folder, '*.npy')):
-        print(npy_file)
-        # Depending on your numpy version you may need to change allow_pickle
-        # from True to False.
-        data = np.load(npy_file, allow_pickle=True).item()
+    while True:
+        data = su.recvall_pickle(sock)
+
         print(data.keys())
         for k in data.keys():
             print(k, np.shape(data[k]))
@@ -125,12 +121,16 @@ def main(args):
         pc, selection = backproject(depth, K, return_finite_depth=True, return_selection=True)
         pc_colors = image.copy()
         pc_colors = np.reshape(pc_colors, [-1, 3])
-        pc_colors = pc_colors[selection, :]
+        pc_colors = pc_colors[selection, ::-1]
+
+        # down sampling
+        idx = np.random.choice(pc_colors.shape[0], 100000, replace=False)
+        pc = pc[idx, :]
+        pc_colors = pc_colors[idx, :]
 
         # Smoothed pc comes from averaging the depth for 10 frames and removing
         # the pixels with jittery depth between those 10 frames.
         object_pc = data['smoothed_object_pc']
-        print(object_pc)
         latents = estimator.sample_latents()
         generated_grasps, generated_scores, _ = estimator.predict_grasps(
             sess,
@@ -138,22 +138,20 @@ def main(args):
             latents,
             num_refine_steps=cfg.num_refine_steps,
         )
+        print("====>", generated_grasps, generated_scores)
         mlab.figure(bgcolor=(1,1,1))
-        draw_scene(
-            pc,
-            pc_color=pc_colors,
-            grasps=generated_grasps,
-            grasp_scores=generated_scores,
-        )
-        print('close the window to continue to next object . . .')
+        if len(generated_grasps) != 0:
+            draw_scene(
+                pc,
+                pc_color=pc_colors,
+                grasps=generated_grasps,
+                grasp_scores=generated_scores,
+            )
+            print('close the window to continue to next object . . .')
         mlab.show()
+        su.sendall_pickle(sock, [generated_grasps, generated_scores])
 
-    
+if __name__ == "__main__" :
 
-
-
-if __name__ == '__main__':
     main(sys.argv[1:])
 
-
-    
